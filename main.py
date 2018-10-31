@@ -6,6 +6,10 @@ import math
 
 import configparser
 
+from multiprocessing import Process
+from threading import Thread
+import time
+
 def main():
     conf = configparser.ConfigParser()
     conf.read("config.ini")
@@ -19,13 +23,14 @@ def main():
     print("Connecting to moodle...")
     browser = mechanicalsoup.StatefulBrowser()
     browser.open("https://moodle.ruhr-uni-bochum.de/m/")
-    print("Done.")
+    print(" Done.")
     
     print("Performing login...")
     browser.select_form('form[class="loginform"]')
     browser["username"] = conf.get("auth", "username")
     browser["password"] = conf.get("auth", "password")
     response = browser.submit_selected()
+    print(" Done.")
 
     course_urls = []
     for item in browser.get_current_page().find_all("h3", class_="coursename"):
@@ -47,7 +52,8 @@ def main():
         for res in resources:
             activityinstance = res.find("div", class_="activityinstance")
 
-            res_name = activityinstance.find("span", class_="instancename").text.replace("/", "_")
+            # strings[0] instead of text is used as the tag contains another tag with text that should not be included.
+            res_name = list(activityinstance.find("span", class_="instancename").strings)[0].replace("/", "_")
             # Find suffix based on the picture
             picture = activityinstance.find("img", class_="activityicon")
             if "pdf" in  picture["src"]:
@@ -87,33 +93,33 @@ def main():
                 resource_urls.append( (url, filename) )
 
         # Download all found resources.
+        threads = []
+        # 3 concurrent connections
+        free_is = [0,1,2]
+        resource_urls = [ru for ru in resource_urls if not os.path.exists(ru[1])]
+        if resource_urls:
+            tqdm.write("  Downloading {0} file(s)...".format(len(resource_urls)))
         for resource_url in resource_urls:
             if os.path.exists(resource_url[1]):
-                #print("  Skipping {}, exists already".format(resource_url[1]))
+                # skip file, it has a local copy already
                 continue
 
-            try:
-                print("  Downloading file {0}".format(resource_url[1]))
-                r = browser.session.get(resource_url[0], stream=True)
+            i = free_is.pop(0)
+            t = Thread(target=download_file, args=(browser, resource_url, i))
+            t.start()
+            threads.append( (t, i) )
 
-                total_size = int(r.headers.get('content-length', 0))
-                wrote = 0
-                with open(resource_url[1], 'wb') as f:
-                    with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
-                        for data in r.iter_content(1024 * 32):
-                            wrote = wrote + len(data)
-                            f.write(data)
-                            pbar.update(len(data))
+            while len(threads) == 3:
+                for (t, i) in threads:
+                    if not t.is_alive():
+                        free_is.append(i)
 
-                if total_size != 0 and wrote != total_size:
-                    print("ERROR, something went wrong")
-                    os.remove(resource_url[1])
-            # delete partially downloaded file on interrupt.
-            except KeyboardInterrupt as e:
-                f.close()
-                print("   Removing file {0}, which has only been partially downloaded.".format(resource_url[1]))
-                os.remove(resource_url[1])
-                raise e
+                threads[:] = [(t, i) for (t, i) in threads if t.is_alive()]
+
+                time.sleep(0.1)
+
+        for (t,_) in threads:
+            t.join()
 
         # Case 3: Files are organized in folders (=> structurally in different course rooms)
         subfolders = browser.get_current_page().find_all("li", class_="folder")
@@ -121,7 +127,8 @@ def main():
             activityinstance = subfolder.find("div", class_="activityinstance")
             anchor = activityinstance.find("a")
             url = anchor["href"]
-            foldername = activityinstance.find("span").text.replace("/", "_")
+
+            foldername = list(activityinstance.find("span").strings)[0].replace("/", "_")
             print("  Found subfolder {0} ({1})".format(foldername, url))
             # use the parent course name for structure.
             course_urls.append( (url, coursename+"/"+foldername) )
@@ -129,6 +136,37 @@ def main():
         print("  Done.")
 
         os.chdir(root_dir)
+
+
+def download_file(browser, resource_url, position):
+    try:
+        r = browser.session.get(resource_url[0], stream=True)
+
+        total_size = int(r.headers.get('content-length', 0))
+        wrote = 0
+        with open(resource_url[1], 'wb') as f:
+            with tqdm(total=total_size, unit='B', unit_scale=True, leave=False, position=position) as pbar:
+                pbar.set_description("  Downloading "+resource_url[1])
+                pbar.update(1)
+                for data in r.iter_content(1024*32):
+                    wrote = wrote + len(data)
+                    f.write(data)
+                    pbar.update(len(data))
+
+                pbar.write(("  Finished downloading {0}".format(resource_url[1])))
+
+        if total_size != 0 and wrote != total_size:
+            print("ERROR, something went wrong")
+            if os.path.exists(resource_url[1]):
+                os.remove(resource_url[1])
+
+
+    # delete partially downloaded file on interrupt.
+    except KeyboardInterrupt as e:
+        f.close()
+        print("   Removing file {0}, which has only been partially downloaded".format(resource_url[1]))
+        os.remove(resource_url[1])
+        raise e
 
 
 if __name__=="__main__":
