@@ -12,7 +12,8 @@ def main():
 
     if not os.path.exists("files"):
         os.mkdir("files")
-        os.chdir("files")
+    os.chdir("files")
+    root_dir = os.getcwd()
 
     # login
     print("Connecting to moodle...")
@@ -35,8 +36,7 @@ def main():
         course_urls.append((anchor["href"], item.text.replace("/", "_")))
 
     for url, coursename in course_urls:
-        if not os.path.exists(coursename):
-            os.mkdir(coursename)
+        os.makedirs(coursename, exist_ok=True)
         os.chdir(coursename)
         print(" Processing course room {}".format(coursename))
         browser.open(url)
@@ -76,30 +76,63 @@ def main():
             # redirect=1 skips the download page
             resource_urls.append( (anchor["href"]+"&redirect=1", res_name.replace("/", "_")) )
 
+        # Case 2: Files are organized in a "filemanager" structure.
+        filemanagers = browser.get_current_page().find_all("div", class_="filemanager")
+        for filemanager in filemanagers:
+            filename_icons = filemanager.find_all("span", class_="fp-filename-icon")
+            for filename_icon in filename_icons:
+                anchor = filename_icon.find("a")
+                url = anchor["href"]
+                filename = anchor.find("span", class_="fp-filename").text
+                resource_urls.append( (url, filename) )
+
+        # Download all found resources.
         for resource_url in resource_urls:
             if os.path.exists(resource_url[1]):
                 #print("  Skipping {}, exists already".format(resource_url[1]))
                 continue
 
-            print("  Downloading file {0}".format(resource_url[1]))
-            r = browser.session.get(resource_url[0], stream=True)
+            try:
+                print("  Downloading file {0}".format(resource_url[1]))
+                r = browser.session.get(resource_url[0], stream=True)
 
-            total_size = int(r.headers.get('content-length', 0))
-            wrote = 0 
-            with open(resource_url[1], 'wb') as f:
-                with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
-                        for data in r.iter_content(1024*32):
-                            wrote = wrote  + len(data)
+                total_size = int(r.headers.get('content-length', 0))
+                wrote = 0
+                with open(resource_url[1], 'wb') as f:
+                    with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
+                        for data in r.iter_content(1024 * 32):
+                            wrote = wrote + len(data)
                             f.write(data)
                             pbar.update(len(data))
 
-            if total_size != 0 and wrote != total_size:
-                print("ERROR, something went wrong")
+                if total_size != 0 and wrote != total_size:
+                    print("ERROR, something went wrong")
+                    os.remove(resource_url[1])
+            # delete partially downloaded file on interrupt.
+            except KeyboardInterrupt as e:
+                f.close()
+                print("   Removing file {0}, which has only been partially downloaded.".format(resource_url[1]))
                 os.remove(resource_url[1])
+                raise e
 
-        print ("  Done.")
-        os.chdir("..")
+        # Case 3: Files are organized in folders (=> structurally in different course rooms)
+        subfolders = browser.get_current_page().find_all("li", class_="folder")
+        for subfolder in subfolders:
+            activityinstance = subfolder.find("div", class_="activityinstance")
+            anchor = activityinstance.find("a")
+            url = anchor["href"]
+            foldername = activityinstance.find("span").text.replace("/", "_")
+            print("  Found subfolder {0} ({1})".format(foldername, url))
+            # use the parent course name for structure.
+            course_urls.append( (url, coursename+"/"+foldername) )
+
+        print("  Done.")
+
+        os.chdir(root_dir)
 
 
 if __name__=="__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
