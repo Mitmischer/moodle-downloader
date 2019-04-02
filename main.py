@@ -125,6 +125,12 @@ def main():
         subfolders = browser.get_current_page().find_all("li", class_="folder")
         for subfolder in subfolders:
             activityinstance = subfolder.find("div", class_="activityinstance")
+            restricted_tag = subfolder.find("div", class_="isrestricted")
+            res_name = list(activityinstance.find("span", class_="instancename").strings)[0]
+            if restricted_tag:
+                print("  (info) Ignoring folder {0} which is restricted".format(res_name))
+                continue
+
             anchor = activityinstance.find("a")
             url = anchor["href"]
 
