@@ -12,36 +12,49 @@ from threading import Thread
 import time
 import click
 
-import datetime
+from enum import Enum
 
+import re
+class RoomDate(Enum):
+    UNDATED = 1
+    OLD_SEMESTER = 2
+    CURRENT_SEMESTER = 3
+
+class Semester(Enum):
+    WINTER = 1
+    SUMMER = 2
+
+from datetime import date
 
 # winter semester: oct to mar
 # summer semester: apr to sep
-def current_semester_as_string(today):
-    ws_strings = ["WiSe{}", "WS {}"]
-    ss_strings = ["SoSe{}"]
+def date_room(room_str):
+    today = date.today()
+    semester_regex = re.compile(r".*((SoSe|SS)(\d\d)|(WiSe|WS)(\d\d)_(?:\d\d))")
+    m = semester_regex.match(room_str)
+    if not m:
+        return RoomDate.UNDATED
 
-    strings = []
     short_year = today.year - 2000
     if short_year < 0:
         raise TypeError("invalid year")
 
     # summer semester
-    if 3 < today.month < 10:
-        for s in ss_strings:
-            strings.append(s.format(short_year))
+    if 4 <= today.month <= 9:
+        if m.group(2) and short_year == int(m.group(3)):
+            return RoomDate.CURRENT_SEMESTER
+        return RoomDate.OLD_SEMESTER
     # winter semester
     else:
-        if today.month <= 3:
-            short_year = short_year - 1
-        for s in ws_strings:
-            strings.append(s.format(str(short_year)+"_"+str(short_year+1)))
+        if m.group(4) and short_year == int(m.group(5)):
+            return CURRENT_SEMESTER
+        return RoomDate.OLD_SEMESTER
 
-    return strings
 
 @click.command()
 @click.option("--include-old-semesters", is_flag=True, help="Specify the flag if all semester should be downloaded (not only the current one).")
-def main(include_old_semesters):
+@click.option("--include-undated", is_flag=True, help="Specify the flag to download rooms without semester information")
+def main(include_old_semesters, include_undated):
     logging.basicConfig(format='(%(levelname)s) %(message)s')
 
     conf = configparser.ConfigParser()
@@ -73,23 +86,17 @@ def main(include_old_semesters):
         print("Found course {0} ({1})".format(item.text.replace("/", "_"), anchor["href"]))
         course_urls.append((anchor["href"], item.text.replace("/", "_")))
 
-    semester_strings = current_semester_as_string(datetime.date.today())
-
     for url, coursename in course_urls:
-        os.makedirs(coursename, exist_ok=True)
-        os.chdir(coursename)
-
-        found = True
-
-        if not include_old_semesters:
-            found = False
-            for s in semester_strings:
-                if coursename.find(s) > -1:
-                    found = True
-                    break
-        if not found:
+        class_ = date_room(coursename)
+        if class_ == RoomDate.UNDATED and not include_undated:
+            print(" Ignoring course room {} (undated)".format(coursename))
+            continue
+        if class_ == RoomDate.OLD_SEMESTER and not include_old_semesters:
             print(" Ignoring course room {} (not current semester)".format(coursename))
             continue
+
+        os.makedirs(coursename, exist_ok=True)
+        os.chdir(coursename)
 
         print(" Processing course room {}".format(coursename))
         browser.open(url)
@@ -173,6 +180,7 @@ def main(include_old_semesters):
         subfolders = browser.get_current_page().find_all("li", class_="folder")
         for subfolder in subfolders:
             activityinstance = subfolder.find("div", class_="activityinstance")
+ 
             restricted_tag = subfolder.find("div", class_="isrestricted")
             res_name = list(activityinstance.find("span", class_="instancename").strings)[0]
             if restricted_tag:
